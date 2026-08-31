@@ -452,11 +452,12 @@ fn find_glob_matches(base_path: &Utf8Path, pattern: &str) -> Result<Vec<Utf8Path
 }
 
 /// Given a crate, remove matching files/directories in excludes.
-fn process_excludes(path: &Utf8PathBuf, name: &str, excludes: &HashSet<&str>) -> Result<()> {
+fn process_excludes(path: &Utf8PathBuf, name: &str, excludes: &HashSet<String>) -> Result<()> {
     let mut matched = false;
     let mut removed_patterns = Vec::new();
 
-    for &exclude in excludes.iter() {
+    for exclude in excludes.iter() {
+        let exclude = exclude.as_str();
         if Utf8Path::new(exclude).is_absolute() {
             anyhow::bail!("Invalid absolute path in crate exclude {name} {exclude}");
         }
@@ -870,7 +871,7 @@ fn expand_platforms<'b>(
 fn delete_unreferenced_packages(
     output_dir: &Utf8Path,
     package_filenames: &BTreeMap<Cow<'_, str>, &Package>,
-    excludes: &HashMap<&str, HashSet<&str>>,
+    excludes: &HashMap<String, HashSet<String>>,
 ) -> Result<()> {
     // A reusable buffer (silly optimization to avoid allocating lots of path buffers)
     let mut pbuf = Utf8PathBuf::from(&output_dir);
@@ -1043,36 +1044,49 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
+    // Build a one-time reverse index from bare crate name to the vendor directory name(s)
+    // on disk.  With --versioned-dirs a crate can appear in multiple directories (e.g.
+    // "hex-0.3.2" and "hex-0.4.3"); without it the highest version uses the plain name.
+    // package_filenames is already keyed by those exact directory names.
+    let mut crate_to_dirs: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (dir_name, pkg) in &package_filenames {
+        crate_to_dirs
+            .entry(pkg.name.as_ref())
+            .or_default()
+            .push(dir_name.as_ref());
+    }
+
     // Index the excludes into a mapping from vendor directory name -> [list of excludes].
     // We key by the actual directory name on disk (e.g. "hex-0.4.3" with --versioned-dirs,
     // or "hex" without) rather than the bare crate name, so that the lookup in
     // delete_unreferenced_packages() matches correctly regardless of --versioned-dirs.
-    let mut excludes: HashMap<&str, HashSet<&str>> = HashMap::new();
+    // The map owns its data to avoid lifetime coupling to package_filenames or config.
+    let mut excludes: HashMap<String, HashSet<String>> = HashMap::new();
     if let Some(exclude_paths) = &config.exclude_crate_paths {
         for ex_path in exclude_paths {
             if ex_path.name == "*" {
                 // Wildcard: kept as-is; delete_unreferenced_packages handles it separately.
-                let e = excludes.entry("*").or_default();
-                e.insert(ex_path.exclude.as_str());
+                excludes
+                    .entry("*".to_string())
+                    .or_default()
+                    .insert(ex_path.exclude.clone());
             } else {
-                // Resolve the bare crate name to the actual directory name(s) that cargo
-                // vendor placed on disk.  With --versioned-dirs a crate can have multiple
-                // versioned directories (e.g. "hex-0.3.2" and "hex-0.4.3"); without it the
-                // highest version uses the plain name.  package_filenames is already keyed by
-                // those exact directory names, so we iterate it to find matches.
-                let mut matched = false;
-                for (dir_name, pkg) in &package_filenames {
-                    if pkg.name == ex_path.name {
-                        let e = excludes.entry(dir_name.as_ref()).or_default();
-                        e.insert(ex_path.exclude.as_str());
-                        matched = true;
+                // Resolve the bare crate name via the reverse index built above.
+                match crate_to_dirs.get(ex_path.name.as_str()) {
+                    Some(dir_names) => {
+                        for &dir_name in dir_names {
+                            excludes
+                                .entry(dir_name.to_string())
+                                .or_default()
+                                .insert(ex_path.exclude.clone());
+                        }
                     }
-                }
-                if !matched {
-                    eprintln!(
-                        "Warning: --exclude-crate-path specifies unknown crate '{}'",
-                        ex_path.name
-                    );
+                    None => {
+                        eprintln!(
+                            "Warning: --exclude-crate-path specifies unknown crate '{}'",
+                            ex_path.name
+                        );
+                    }
                 }
             }
         }

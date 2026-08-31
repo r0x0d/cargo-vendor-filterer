@@ -77,6 +77,7 @@ fn exclude_with_glob_patterns() {
 /// name supplied by the user (e.g. `hex#benches`) and resolve it to the versioned directory
 /// name on disk (e.g. `hex-0.4.3`).
 #[test]
+#[serial_test::parallel]
 fn exclude_with_versioned_dirs_single_version() {
     let (_td, test_folder) = tempdir().unwrap();
     let manifest = write_file_create_parents(
@@ -114,6 +115,7 @@ fn exclude_with_versioned_dirs_single_version() {
 
 /// Same as above but with two versions of the same crate to exercise the multi-version path.
 #[test]
+#[serial_test::parallel]
 fn exclude_with_versioned_dirs_multiple_versions() {
     let (_td, test_folder) = tempdir().unwrap();
     let dep_a = test_folder.join("A");
