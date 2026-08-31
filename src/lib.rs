@@ -1043,12 +1043,38 @@ pub fn run(args: Args) -> Result<()> {
         }
     }
 
-    // Index the excludes into a mapping from crate name -> [list of excludes].
+    // Index the excludes into a mapping from vendor directory name -> [list of excludes].
+    // We key by the actual directory name on disk (e.g. "hex-0.4.3" with --versioned-dirs,
+    // or "hex" without) rather than the bare crate name, so that the lookup in
+    // delete_unreferenced_packages() matches correctly regardless of --versioned-dirs.
     let mut excludes: HashMap<&str, HashSet<&str>> = HashMap::new();
     if let Some(exclude_paths) = &config.exclude_crate_paths {
         for ex_path in exclude_paths {
-            let e = excludes.entry(ex_path.name.as_str()).or_default();
-            e.insert(ex_path.exclude.as_str());
+            if ex_path.name == "*" {
+                // Wildcard: kept as-is; delete_unreferenced_packages handles it separately.
+                let e = excludes.entry("*").or_default();
+                e.insert(ex_path.exclude.as_str());
+            } else {
+                // Resolve the bare crate name to the actual directory name(s) that cargo
+                // vendor placed on disk.  With --versioned-dirs a crate can have multiple
+                // versioned directories (e.g. "hex-0.3.2" and "hex-0.4.3"); without it the
+                // highest version uses the plain name.  package_filenames is already keyed by
+                // those exact directory names, so we iterate it to find matches.
+                let mut matched = false;
+                for (dir_name, pkg) in &package_filenames {
+                    if pkg.name == ex_path.name {
+                        let e = excludes.entry(dir_name.as_ref()).or_default();
+                        e.insert(ex_path.exclude.as_str());
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    eprintln!(
+                        "Warning: --exclude-crate-path specifies unknown crate '{}'",
+                        ex_path.name
+                    );
+                }
+            }
         }
     }
 
